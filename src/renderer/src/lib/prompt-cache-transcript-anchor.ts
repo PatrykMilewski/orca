@@ -2,6 +2,7 @@ import type { AgentProviderSessionMetadata } from '../../../shared/agent-session
 import { parseExecutionHostId } from '../../../shared/execution-host'
 import type { NativeChatMessage } from '../../../shared/native-chat-types'
 import { parsePaneKey } from '../../../shared/stable-pane-id'
+import { findTerminalTabWorktreeId } from '@/components/native-chat/native-chat-file-link'
 import { getNativeChatSessionTransport } from '@/components/native-chat/native-chat-session-transport'
 import { resolvePaneAgentSessionId } from '@/components/terminal-pane/pane-agent-session-id'
 import type { AppState } from '@/store/types'
@@ -34,15 +35,6 @@ export function lastRequestTimestamp(messages: readonly NativeChatMessage[]): nu
   return latest
 }
 
-function findWorktreeIdForTab(state: AppState, tabId: string): string | null {
-  for (const [worktreeId, tabs] of Object.entries(state.tabsByWorktree)) {
-    if (tabs.some((tab) => tab.id === tabId)) {
-      return worktreeId
-    }
-  }
-  return null
-}
-
 /**
  * The Claude session a pane's countdown belongs to, when its transcript is readable
  * through the native chat transport. SSH panes are skipped: their transcript lives on
@@ -59,7 +51,7 @@ export function resolvePromptCacheTranscriptSource(
   }
   const row = state.agentStatusByPaneKey[paneKey]
   if (row?.providerSession?.id === sessionId) {
-    const worktreeId = row.worktreeId ?? findWorktreeIdForTab(state, tabId)
+    const worktreeId = row.worktreeId ?? findTerminalTabWorktreeId(state.tabsByWorktree, tabId)
     if (row.agentType !== 'claude' || (row.connectionId ?? null) !== null || !worktreeId) {
       return null
     }
@@ -84,7 +76,7 @@ function transcriptSource(
   if (session.key !== 'session_id') {
     return null
   }
-  // Why: SSH orphan records can carry no connectionId (#9030), so the worktree's host decides too.
+  // Why: SSH orphan records can carry no connectionId, so the worktree's host decides too.
   if (parseExecutionHostId(getKnownExecutionHostIdForWorktree(state, worktreeId))?.kind === 'ssh') {
     return null
   }
@@ -92,6 +84,27 @@ function transcriptSource(
     sessionId: session.id,
     ...(session.transcriptPath ? { transcriptPath: session.transcriptPath } : {}),
     worktreeId
+  }
+}
+
+async function readLastRequestTimestamp(
+  state: AppState,
+  source: PromptCacheTranscriptSource
+): Promise<number | null> {
+  const transport = getNativeChatSessionTransport(
+    getRuntimeEnvironmentIdForWorktree(state, source.worktreeId)
+  )
+  try {
+    const result = await transport.readSession(
+      'claude',
+      source.sessionId,
+      TRANSCRIPT_ANCHOR_READ_LIMIT,
+      source.transcriptPath
+    )
+    return 'error' in result ? null : lastRequestTimestamp(result.messages)
+  } catch {
+    // Why: an unreadable transcript keeps the countdown as started.
+    return null
   }
 }
 
@@ -111,24 +124,7 @@ export async function anchorPromptCacheTimerToTranscript(args: {
   if (!source) {
     return
   }
-  const transport = getNativeChatSessionTransport(
-    getRuntimeEnvironmentIdForWorktree(state, source.worktreeId)
-  )
-  let anchoredAt: number | null
-  try {
-    const result = await transport.readSession(
-      'claude',
-      source.sessionId,
-      TRANSCRIPT_ANCHOR_READ_LIMIT,
-      source.transcriptPath
-    )
-    if ('error' in result) {
-      return
-    }
-    anchoredAt = lastRequestTimestamp(result.messages)
-  } catch {
-    return
-  }
+  const anchoredAt = await readLastRequestTimestamp(state, source)
   if (anchoredAt === null || anchoredAt >= args.startedAt) {
     return
   }
