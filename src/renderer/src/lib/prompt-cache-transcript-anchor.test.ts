@@ -65,7 +65,7 @@ function sleepingRecord(
 }
 
 describe('lastRequestTimestamp', () => {
-  it('returns the newest prompt, tool result, or reply and skips interruption notices', () => {
+  it('returns the newest prompt or tool result and skips interruption notices', () => {
     expect(
       lastRequestTimestamp([
         message('user', 100),
@@ -75,6 +75,14 @@ describe('lastRequestTimestamp', () => {
         message('system', 400)
       ])
     ).toBe(300)
+  })
+
+  it('prefers the request over a later reply', () => {
+    expect(lastRequestTimestamp([message('user', 100), message('assistant', 9_000)])).toBe(100)
+  })
+
+  it('falls back to the newest reply when the tail holds no request', () => {
+    expect(lastRequestTimestamp([message('assistant', 100), message('reasoning', 200)])).toBe(200)
   })
 
   it('returns null when no conversation record has a timestamp', () => {

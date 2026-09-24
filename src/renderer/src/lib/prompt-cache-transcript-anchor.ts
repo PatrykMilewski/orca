@@ -20,20 +20,24 @@ type PromptCacheTranscriptSource = {
 }
 
 /**
- * Newest conversation record, taken as the time of the last API request. A final reply
- * lands after that request's own generation time, so the anchor can trail the true
- * request by that much; a prompt or tool result is sent the moment it is written, so the
- * anchor holds when the countdown starts before the reply is flushed. Interruption
- * notices are never sent.
+ * Time of the last API request. A prompt or tool result is sent the moment it is
+ * written, so the newest one is that request; a reply only lands after its generation
+ * time and is used when the tail holds no request. Interruption notices are never sent.
  */
 export function lastRequestTimestamp(messages: readonly NativeChatMessage[]): number | null {
-  let latest: number | null = null
+  let latestRequest: number | null = null
+  let latestReply: number | null = null
   for (const message of messages) {
-    if (message.role !== 'system' && message.timestamp !== null) {
-      latest = latest === null ? message.timestamp : Math.max(latest, message.timestamp)
+    if (message.timestamp === null || message.role === 'system') {
+      continue
+    }
+    if (message.role === 'user' || message.role === 'tool') {
+      latestRequest = Math.max(latestRequest ?? message.timestamp, message.timestamp)
+    } else {
+      latestReply = Math.max(latestReply ?? message.timestamp, message.timestamp)
     }
   }
-  return latest
+  return latestRequest ?? latestReply
 }
 
 /**
