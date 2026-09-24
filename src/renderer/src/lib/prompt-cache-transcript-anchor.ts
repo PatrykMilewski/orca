@@ -1,8 +1,14 @@
+import type { AgentProviderSessionMetadata } from '../../../shared/agent-session-resume'
+import { parseExecutionHostId } from '../../../shared/execution-host'
 import type { NativeChatMessage } from '../../../shared/native-chat-types'
 import { parsePaneKey } from '../../../shared/stable-pane-id'
 import { getNativeChatSessionTransport } from '@/components/native-chat/native-chat-session-transport'
+import { resolvePaneAgentSessionId } from '@/components/terminal-pane/pane-agent-session-id'
 import type { AppState } from '@/store/types'
-import { getRuntimeEnvironmentIdForWorktree } from './worktree-runtime-owner'
+import {
+  getKnownExecutionHostIdForWorktree,
+  getRuntimeEnvironmentIdForWorktree
+} from './worktree-runtime-owner'
 
 const TRANSCRIPT_ANCHOR_READ_LIMIT = 40
 
@@ -13,9 +19,10 @@ type PromptCacheTranscriptSource = {
 }
 
 /**
- * Newest conversation record, which bounds the last API request from below. A prompt
- * or tool result is sent the moment it is written, so it still anchors correctly when
- * the countdown starts before the reply is flushed. Interruption notices are not sent.
+ * Newest conversation record, taken as the time of the last API request. A reply lands
+ * seconds after its request; a prompt or tool result is sent the moment it is written,
+ * so the anchor holds when the countdown starts before the reply is flushed.
+ * Interruption notices are never sent.
  */
 export function lastRequestTimestamp(messages: readonly NativeChatMessage[]): number | null {
   let latest: number | null = null
@@ -38,47 +45,53 @@ function findWorktreeIdForTab(state: AppState, tabId: string): string | null {
 
 /**
  * The Claude session a pane's countdown belongs to, when its transcript is readable
- * through the native chat transport. SSH relay panes are skipped: their transcript
- * lives on the remote machine, and a same-path local file is not that session.
+ * through the native chat transport. SSH panes are skipped: their transcript lives on
+ * the remote machine, and a same-path local file is not that session.
  */
 export function resolvePromptCacheTranscriptSource(
   state: AppState,
   paneKey: string
 ): PromptCacheTranscriptSource | null {
   const tabId = parsePaneKey(paneKey)?.tabId
-  if (!tabId) {
+  const sessionId = tabId ? resolvePaneAgentSessionId(state, paneKey) : null
+  if (!tabId || !sessionId) {
     return null
   }
   const row = state.agentStatusByPaneKey[paneKey]
-  if (row?.agentType === 'claude' && row.providerSession?.key === 'session_id') {
+  if (row?.providerSession?.id === sessionId) {
     const worktreeId = row.worktreeId ?? findWorktreeIdForTab(state, tabId)
-    if ((row.connectionId ?? null) !== null || !worktreeId) {
+    if (row.agentType !== 'claude' || (row.connectionId ?? null) !== null || !worktreeId) {
       return null
     }
-    return {
-      sessionId: row.providerSession.id,
-      ...(row.providerSession.transcriptPath
-        ? { transcriptPath: row.providerSession.transcriptPath }
-        : {}),
-      worktreeId
-    }
+    return transcriptSource(state, row.providerSession, worktreeId)
   }
-  // Why: after a restart the persisted sleep checkpoint names the session before
-  // the hook server has republished the pane's row.
   const record = state.sleepingAgentSessionsByPaneKey[paneKey]
   if (
-    record?.agent !== 'claude' ||
-    record.providerSession.key !== 'session_id' ||
+    record?.providerSession.id !== sessionId ||
+    record.agent !== 'claude' ||
     (record.connectionId ?? null) !== null
   ) {
     return null
   }
+  return transcriptSource(state, record.providerSession, record.worktreeId)
+}
+
+function transcriptSource(
+  state: AppState,
+  session: AgentProviderSessionMetadata,
+  worktreeId: string
+): PromptCacheTranscriptSource | null {
+  if (session.key !== 'session_id') {
+    return null
+  }
+  // Why: SSH orphan records can carry no connectionId (#9030), so the worktree's host decides too.
+  if (parseExecutionHostId(getKnownExecutionHostIdForWorktree(state, worktreeId))?.kind === 'ssh') {
+    return null
+  }
   return {
-    sessionId: record.providerSession.id,
-    ...(record.providerSession.transcriptPath
-      ? { transcriptPath: record.providerSession.transcriptPath }
-      : {}),
-    worktreeId: record.worktreeId
+    sessionId: session.id,
+    ...(session.transcriptPath ? { transcriptPath: session.transcriptPath } : {}),
+    worktreeId
   }
 }
 

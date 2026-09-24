@@ -2,7 +2,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 import type { AgentStatusEntry } from '../../../shared/agent-status-types'
 import type { SleepingAgentSessionRecord } from '../../../shared/agent-session-resume'
 import type { NativeChatMessage } from '../../../shared/native-chat-types'
-import { createTestStore } from '@/store/slices/store-test-helpers'
+import { createTestStore, makeWorktree, TEST_REPO } from '@/store/slices/store-test-helpers'
 import {
   anchorPromptCacheTimerToTranscript,
   lastRequestTimestamp,
@@ -119,6 +119,39 @@ describe('resolvePromptCacheTranscriptSource', () => {
       transcriptPath: TRANSCRIPT_PATH,
       worktreeId: WORKTREE_ID
     })
+  })
+
+  it('skips unstamped sleep checkpoints on an SSH worktree', () => {
+    const store = createTestStore()
+    store.setState({
+      repos: [{ ...TEST_REPO, id: 'repo-1', connectionId: 'remote' }],
+      worktreesByRepo: {
+        'repo-1': [makeWorktree({ id: WORKTREE_ID, repoId: 'repo-1', hostId: 'ssh:remote' })]
+      },
+      sleepingAgentSessionsByPaneKey: {
+        [PANE_KEY]: sleepingRecord({ connectionId: undefined })
+      }
+    })
+
+    expect(resolvePromptCacheTranscriptSource(store.getState(), PANE_KEY)).toBeNull()
+  })
+
+  it('does not fall back to the sleep checkpoint while a live row has no session', () => {
+    const store = createTestStore()
+    store.setState({
+      agentStatusByPaneKey: { [PANE_KEY]: claudeRow({ providerSession: undefined }) },
+      sleepingAgentSessionsByPaneKey: { [PANE_KEY]: sleepingRecord() }
+    })
+
+    expect(resolvePromptCacheTranscriptSource(store.getState(), PANE_KEY)).toBeNull()
+  })
+
+  it('skips a pane that dropped back to its shell', () => {
+    const store = createTestStore()
+    store.setState({ agentStatusByPaneKey: { [PANE_KEY]: claudeRow() } })
+    store.getState().setPaneForegroundAgent(PANE_KEY, { agent: null, shellForeground: true })
+
+    expect(resolvePromptCacheTranscriptSource(store.getState(), PANE_KEY)).toBeNull()
   })
 
   it('ignores seed sentinel keys', () => {
