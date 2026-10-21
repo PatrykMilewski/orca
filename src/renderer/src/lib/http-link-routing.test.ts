@@ -722,6 +722,18 @@ describe('openHttpLink background opening', () => {
     expect(openUrlMock).not.toHaveBeenCalled()
   })
 
+  it('does not switch the active worktree', () => {
+    storeState.settings = { openLinksInApp: true, openLinksInAppInBackground: true }
+    storeState.activeWorktreeId = 'wt-other'
+
+    openHttpLink('https://example.com/', { worktreeId: 'wt-1' })
+
+    expect(setActiveWorktreeMock).not.toHaveBeenCalled()
+    expect(createBrowserTabMock).toHaveBeenCalledWith('wt-1', 'https://example.com/', {
+      activate: false
+    })
+  })
+
   it('keeps a labeled localhost tab in the background', async () => {
     storeState.settings = {
       openLinksInApp: true,
@@ -766,7 +778,7 @@ describe('openHttpLink background opening', () => {
     )
   })
 
-  it('asks the remote workspace browser not to take focus', () => {
+  it('asks the remote workspace browser not to take focus or switch worktrees', () => {
     storeState.settings = { openLinksInApp: true, openLinksInAppInBackground: true }
 
     openHttpLink('https://example.com/', {
@@ -776,7 +788,11 @@ describe('openHttpLink background opening', () => {
     })
 
     expect(openRuntimeBrowserTabMock).toHaveBeenCalledWith(
-      expect.objectContaining({ focusOnCreate: false, expectedRuntimeEnvironmentId: 'env-1' })
+      expect.objectContaining({
+        focusOnCreate: false,
+        selectWorktree: false,
+        expectedRuntimeEnvironmentId: 'env-1'
+      })
     )
   })
 
