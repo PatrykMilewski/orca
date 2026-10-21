@@ -35,6 +35,7 @@ type StoreAccessor = () => {
       GlobalSettings,
       | 'openLinksInApp'
       | 'openLinksInAppModifierInverts'
+      | 'openLinksInAppInBackground'
       | 'activeRuntimeEnvironmentId'
       | 'localhostWorktreeLabelsEnabled'
     >
@@ -55,6 +56,7 @@ type WorkspaceHttpLinkBrowserRequest = {
   workspaceId: string
   url: string
   intent: { kind: 'url' }
+  focusOnCreate?: boolean
   expectedRuntimeEnvironmentId?: string
   expectedSshConnectionId?: string
 }
@@ -146,6 +148,7 @@ export function openHttpLink(url: string, opts: OpenHttpLinkOptions = {}): void 
     !modifier.wantsSystemBrowser &&
     Boolean(worktreeId) &&
     (forceInApp || openLinksInApp || modifier.wantsOrca)
+  const activate = state?.settings?.openLinksInAppInBackground !== true
 
   if (
     wantsOrca &&
@@ -160,6 +163,7 @@ export function openHttpLink(url: string, opts: OpenHttpLinkOptions = {}): void 
         workspaceId: worktreeId,
         url,
         intent: { kind: 'url' },
+        ...(activate ? {} : { focusOnCreate: false }),
         ...(effectiveSourceOwner?.kind === 'runtime'
           ? { expectedRuntimeEnvironmentId: effectiveSourceOwner.runtimeEnvironmentId }
           : effectiveSourceOwner?.kind === 'ssh'
@@ -188,11 +192,11 @@ export function openHttpLink(url: string, opts: OpenHttpLinkOptions = {}): void 
     }
     const localhostRoute = localhostLabelRouteForHttpLink(url, state, sourceOwner)
     if (!localhostRoute) {
-      state.createBrowserTab(worktreeId, url, { activate: true })
+      state.createBrowserTab(worktreeId, url, { activate })
       return
     }
     void openLabeledLocalhostLink(url, localhostRoute, (labeledUrl) => {
-      state.createBrowserTab(worktreeId, labeledUrl, { activate: true })
+      state.createBrowserTab(worktreeId, labeledUrl, { activate })
     })
     return
   }
