@@ -17,7 +17,6 @@ import { bootWindowFromPartitions } from '../app-shell/startup-window-view.test-
 import { buildWorkspaceSessionPayload } from '../lib/workspace-session'
 import { createStoreSessionMockApi } from '../store/slices/store-session-test-harness'
 import { createTestStore } from '../store/slices/store-test-helpers'
-import { recordOpenedEditorTabInLayoutOwner } from '../store/slices/editor/tabs/editor-tab-layout-owner'
 import { recordOpenedAgentSessionTabInLayoutOwner } from './agent-session-tab-layout-owner'
 import { recordOpenedSimulatorTabInLayoutOwner } from '@/lib/simulator-tab-layout-owner'
 import { withLayoutOwnerTabProps } from '@/components/tab-bar/tab-bar-layout-owner-props'
@@ -240,25 +239,6 @@ describe('a tab the window drew, closed or moved, with a frame from before main 
 
   it.each([
     [
-      'editor',
-      (store: ReturnType<typeof createTestStore>) => {
-        const file = {
-          ...store.getState().openFiles[0]!,
-          id: '/Users/dev/orca/src/new.ts',
-          filePath: '/Users/dev/orca/src/new.ts',
-          relativePath: 'src/new.ts'
-        }
-        store.setState({ openFiles: [...store.getState().openFiles, file] })
-        const tab = drawTab(store, {
-          id: 'editor:new',
-          entityId: file.id,
-          contentType: 'editor'
-        })
-        recordOpenedEditorTabInLayoutOwner(store.getState(), tab)
-        return tab
-      }
-    ],
-    [
       'chat',
       (store: ReturnType<typeof createTestStore>) => {
         const tab = drawTab(store, {
@@ -358,8 +338,8 @@ describe('a tab the window drew, closed or moved, with a frame from before main 
 describe('a change main applies first, with frames flowing', () => {
   const callsOf = (type: string) => rpc.calls.filter((call) => call.command.type === type)
 
-  it('pins a preview tab and promotes it once; a frame from before does not undo it', async () => {
-    const { store, sync, before, answer } = await boot()
+  it('pins a preview tab and promotes it once; only main’s frame ends the preview', async () => {
+    const { store, sync, answer } = await boot()
     const file = {
       ...store.getState().openFiles[0]!,
       id: '/Users/dev/orca/src/peek.ts',
@@ -374,8 +354,13 @@ describe('a change main applies first, with frames flowing', () => {
       contentType: 'editor',
       isPreview: true
     })
-    recordOpenedEditorTabInLayoutOwner(store.getState(), tab)
-    await answer(0)
+    // Main holds the tab: its frame carries the window's copy.
+    seq += 1
+    stream.onFrame!(
+      frames.records(GIT_KEY, publishedOf(buildWorkspaceSessionPayload(store.getState())), seq)
+    )
+    stream.onPosition!(seq)
+    await settle()
     const entry = () =>
       store.getState().unifiedTabsByWorktree[GIT_KEY]!.find((item) => item.id === tab.id)!
 
@@ -396,13 +381,11 @@ describe('a change main applies first, with frames flowing', () => {
     // Main's frame draws the pin; the window does not pin it again.
     expect(windowPin).not.toHaveBeenCalled()
     expect(callsOf('promotePreviewTab')).toHaveLength(1)
-    expect(entry()).toMatchObject({ isPinned: true })
-    expect(entry().isPreview).toBeFalsy()
+    expect(entry()).toMatchObject({ isPinned: true, isPreview: true })
 
-    sendStaleFrame(before)
-    await settle()
-    expect(entry().isPreview).toBeFalsy()
-    await answer(rpc.calls.indexOf(callsOf('promotePreviewTab')[0]!))
+    await answer(rpc.calls.indexOf(callsOf('promotePreviewTab')[0]!), okReply, (layout) => {
+      delete layout.tabs.find((item) => item.id === tab.id)!.isPreview
+    })
     expect(entry()).toMatchObject({ isPinned: true })
     expect(entry().isPreview).toBeFalsy()
     expect(callsOf('promotePreviewTab')).toHaveLength(1)

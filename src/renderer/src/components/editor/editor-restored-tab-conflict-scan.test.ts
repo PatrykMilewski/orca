@@ -29,17 +29,18 @@ function openRestoredDirtyTab(
     worktreeId: 'wt-1'
   }
 ): void {
-  store.getState().openFile({
+  // A layout-owner build keys a floating workspace's file by its owner, not its path.
+  const fileId = store.getState().openFile({
     filePath,
     ...owner,
     language: 'typescript',
     mode: 'edit'
   })
-  store.getState().setEditorDraft(filePath, 'restored draft')
-  store.getState().markFileDirty(filePath, true)
-  store.getState().setLastKnownDiskSignature(filePath, getDiskBaselineSignature(baselineContent))
+  store.getState().setEditorDraft(fileId, 'restored draft')
+  store.getState().markFileDirty(fileId, true)
+  store.getState().setLastKnownDiskSignature(fileId, getDiskBaselineSignature(baselineContent))
   // Why: hydration flags restored dirty tabs for verification; tests mimic it.
-  store.getState().setPendingDiskBaselineVerification(filePath, true)
+  store.getState().setPendingDiskBaselineVerification(fileId, true)
 }
 
 describe('attachRestoredTabConflictScan', () => {

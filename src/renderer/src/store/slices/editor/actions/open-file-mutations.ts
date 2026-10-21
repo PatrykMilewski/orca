@@ -4,10 +4,11 @@ import { isEditorTabContentType } from '../tabs/editor-tab-content-type'
 import type { Tab } from '../../../../../../shared/tab-types'
 import { ORCA_LAYOUT_OWNER_IS_MAIN } from '../../../../../../shared/layout-owner-switch'
 import { withPreviewEnded } from '../../tabs/tab-preview-flag'
+import { previewEditorTabsOf } from '../tabs/editor-tab-layout-owner'
 import {
-  previewEditorTabsOf,
-  recordPromotedEditorTabsInLayoutOwner
-} from '../tabs/editor-tab-layout-owner'
+  endsPreviewHere,
+  promotePreviewTabsThroughLayoutOwner
+} from '../../tabs/preview-tab-promotion'
 import {
   editorBufferOf,
   updateEditorBuffer,
@@ -120,7 +121,10 @@ export function createOpenFileMutations(
                   Object.entries(s.unifiedTabsByWorktree ?? {}).map(([worktreeId, tabs]) => [
                     worktreeId,
                     tabs.map((tab) =>
-                      tab.entityId === fileId && isEditorTabContentType(tab.contentType)
+                      tab.entityId === fileId &&
+                      isEditorTabContentType(tab.contentType) &&
+                      // Switch point: main's frame ends a preview main owns.
+                      endsPreviewHere(s, worktreeId)
                         ? withPreviewEnded(tab)
                         : tab
                     )
@@ -130,9 +134,9 @@ export function createOpenFileMutations(
             : {})
         }
       })
-      // Switch point: main records that an edit made a preview tab permanent.
+      // Switch point: main makes the edited preview tabs permanent.
       if (ORCA_LAYOUT_OWNER_IS_MAIN && promoted.length > 0) {
-        recordPromotedEditorTabsInLayoutOwner(get(), promoted)
+        promotePreviewTabsThroughLayoutOwner(get(), set, promoted)
       }
     },
 

@@ -7,7 +7,11 @@ import type { AppState } from '@/store/types'
 import type { TerminalTab } from '../../../shared/terminal-tab-types'
 import type { WorkspaceLayoutCache } from '@/store/workspace-layout-cache'
 import { buildLayoutFrameSlices } from '@/store/workspace-layout-frame-slices'
-import { buildLayoutFrameStorePatch } from '@/store/workspace-layout-frame-store-patch'
+import {
+  buildLayoutFrameStorePatch,
+  terminalLayoutsPatch
+} from '@/store/workspace-layout-frame-store-patch'
+import { terminalLayoutsWithFrameBindings } from './workspace-layout-frame-bindings'
 import type { HeldDrawnTabs } from '@/store/workspace-layout-frame-held-tabs'
 import { layoutViewAndFactsOfStore } from '@/store/workspace-layout-frame-store-view'
 import { buildWorkspaceSessionPayload } from '@/lib/workspace-session'
@@ -39,12 +43,10 @@ function patchFromSlices(
   { view, facts }: { view: DesktopLayoutView; facts: LayoutContentFacts },
   holds: LayoutFrameBuildHolds
 ): LayoutFrameBuildPatch {
-  const heldFiles = new Set(state.openFiles.map((file) => `${file.worktreeId}\0${file.id}`))
   const built = buildLayoutFrameSlices({
     layouts: Object.fromEntries(keys.map((key) => [key, cache[key]!])),
     facts,
-    view,
-    holdsEditorFile: (worktreeId, fileId) => heldFiles.has(`${worktreeId}\0${fileId}`)
+    view
   })
   return buildLayoutFrameStorePatch(
     state,
@@ -86,4 +88,42 @@ export function workspaceLayoutFrameBuildPatch(
   holds: LayoutFrameBuildHolds
 ): LayoutFrameBuildPatch {
   return patchFromSlices(state, cache, keys, layoutViewAndFactsOfStore(state, keys), holds)
+}
+
+/** What one flush builds; `rebound` tabs whose bindings only a build shows join `workspaceBuilt`. */
+export type LayoutFrameFlushBuilds = {
+  fullBuilt: readonly string[]
+  workspaceBuilt: string[]
+  rebound: ReadonlyMap<string, ReadonlySet<string>>
+}
+
+/** One flush's builds as one store patch: each build reads the store as the one before left it. */
+export function layoutFrameFlushPatch(
+  state: AppState,
+  cache: WorkspaceLayoutCache,
+  { fullBuilt, workspaceBuilt, rebound }: LayoutFrameFlushBuilds,
+  holds: LayoutFrameBuildHolds
+): LayoutFrameBuildPatch {
+  let patch: LayoutFrameBuildPatch =
+    fullBuilt.length > 0 ? fullLayoutFrameBuildPatch(state, cache, fullBuilt, holds) : {}
+  if (rebound.size > 0) {
+    let layouts = { ...state, ...patch }.terminalLayoutsByTabId
+    for (const [key, tabIds] of rebound) {
+      const layout = cache[key]
+      const next = layout && terminalLayoutsWithFrameBindings(layouts, key, layout, tabIds)
+      if (next) {
+        layouts = next
+      } else {
+        workspaceBuilt.push(key)
+      }
+    }
+    patch = { ...patch, ...terminalLayoutsPatch({ ...state, ...patch }, layouts) }
+  }
+  if (workspaceBuilt.length > 0) {
+    patch = {
+      ...patch,
+      ...workspaceLayoutFrameBuildPatch({ ...state, ...patch }, cache, workspaceBuilt, holds)
+    }
+  }
+  return patch
 }

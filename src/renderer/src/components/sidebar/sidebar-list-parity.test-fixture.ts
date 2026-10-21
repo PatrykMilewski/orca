@@ -22,6 +22,11 @@ import type {
 import type { SmartStampFields } from '../../../../shared/sidebar-list/sort-stamps'
 import { buildPairedServerActivityFacts } from '../../../../shared/sidebar-list/paired-server-activity-facts'
 import { GOLDEN_NOW, folder, lineage } from './sidebar-list-golden-factories.test-fixture'
+import {
+  GROUPED_REPOS,
+  GROUPED_WORKTREES,
+  GROUPS_OF_GROUPED_REPOS
+} from './sidebar-list-parity-catalog.test-fixture'
 import { sidebarWorkspaceRowFilters } from './sidebar-filter-actions'
 import {
   readWindowWorkspaceActivityFacts,
@@ -76,9 +81,13 @@ const STAMPS: Record<string, SmartStampFields & { lastActivityAt?: number; isUnr
  * this host runs.
  */
 export function parityWorldOverrides(base: Partial<AppState>): Partial<AppState> {
-  const repoById = new Map((base.repos ?? []).map((repo) => [repo.id, repo]))
+  const repos = [...(base.repos ?? []), ...GROUPED_REPOS]
+  const repoById = new Map(repos.map((entry) => [entry.id, entry]))
   const worktreesByRepo: AppState['worktreesByRepo'] = {}
-  for (const [repoId, worktrees] of Object.entries(base.worktreesByRepo ?? {})) {
+  for (const [repoId, worktrees] of Object.entries({
+    ...base.worktreesByRepo,
+    ...GROUPED_WORKTREES
+  })) {
     const repo = repoById.get(repoId)
     worktreesByRepo[repoId] = worktrees.map((worktree) => {
       const branch = worktree.branch.replace('refs/heads/', '')
@@ -96,7 +105,8 @@ export function parityWorldOverrides(base: Partial<AppState>): Partial<AppState>
   const pending = Object.values(base.pendingWorktreeCreations ?? {})[0]
   const [serverMain, serverChild] = worktreesByRepo.api ?? []
   // The repos, projects and server groups as the window's all-host fetch folds them.
-  const catalog = windowCatalogFromServerAnswers({ ...base, worktreesByRepo })
+  const projectGroups = [...(base.projectGroups ?? []), ...GROUPS_OF_GROUPED_REPOS]
+  const catalog = windowCatalogFromServerAnswers({ ...base, repos, worktreesByRepo, projectGroups })
   return {
     ...catalog,
     // A server workspace nested under the server's main, and a server folder workspace.
@@ -179,9 +189,12 @@ export function parityServerBrowserTabState(): Partial<AppState> {
  * The feed domains main would publish for this store, read through the window-side projections
  * the shadow comparison held equal to main's producers before the window read main's feed.
  */
-export function feedDomainsFromWindowState(state: AppState): SidebarInputsFeedDomain[] {
+export function feedDomainsFromWindowState(
+  state: AppState,
+  serverHostIds: ReadonlySet<string> = new Set([SERVER_HOST_ID])
+): SidebarInputsFeedDomain[] {
   const worktrees = getAllWorktreesFromState(state)
-  const servers = readWindowPairedServerHosts(state, new Set([SERVER_HOST_ID]))
+  const servers = readWindowPairedServerHosts(state, serverHostIds)
   const windowActivity = readWindowWorkspaceActivityFacts(state, GOLDEN_NOW)
   const serverRows = readWindowPairedServerRows(state, new Set(servers.keys()))
   // The server reports the terminals and agents the desktop runs in its workspaces.
@@ -189,6 +202,9 @@ export function feedDomainsFromWindowState(state: AppState): SidebarInputsFeedDo
     const facts = windowActivity.get(row.worktreeId)
     return { ...row, activity: { terminal: facts?.terminal ?? null, agent: facts?.agent ?? null } }
   })
+  // Each server reports only its own rows, keyed `hostId|worktreeId`.
+  const rowsOf = <Row extends { key: string }>(rows: readonly Row[], hostId: string): Row[] =>
+    rows.filter((row) => row.key.startsWith(`${hostId}|`))
   const domain = (
     name: string,
     read: SidebarInputsFeedDomain['read']
@@ -211,7 +227,11 @@ export function feedDomainsFromWindowState(state: AppState): SidebarInputsFeedDo
     domain('activity', () => ({
       // The window's browser and chat tabs, as its saved session for the server holds them.
       ...buildPairedServerActivityFacts(
-        [{ hostId: SERVER_HOST_ID, freshness: 'live', rows: reportedRows }],
+        [...servers.keys()].map((hostId) => ({
+          hostId,
+          freshness: 'live' as const,
+          rows: rowsOf(reportedRows, hostId)
+        })),
         () => ({
           browserTabsByWorktree: state.browserTabsByWorktree,
           unifiedTabs: state.unifiedTabsByWorktree
@@ -221,7 +241,10 @@ export function feedDomainsFromWindowState(state: AppState): SidebarInputsFeedDo
     })),
     domain('review', () => ({
       ...buildPairedServerReviewFacts(
-        [{ hostId: SERVER_HOST_ID, rows: [...serverRows.values()] }],
+        [...servers.keys()].map((hostId) => ({
+          hostId,
+          rows: rowsOf([...serverRows.values()], hostId)
+        })),
         state.prCache
       ),
       ...Object.fromEntries(
@@ -296,7 +319,7 @@ export function projectParityRows(
         ]
       case 'header':
         return [
-          `HEADER ${row.key} collapseKey=${row.collapseKey ?? '-'} label=${row.label ?? '-'} icon=${JSON.stringify(row.icon)} count=${row.count} hostId=${row.hostId ?? '-'}`
+          `HEADER ${row.key} collapseKey=${row.collapseKey ?? '-'} label=${row.label ?? '-'} icon=${JSON.stringify(row.icon)} count=${row.count} hostId=${row.hostId ?? '-'} groupDepth=${row.projectGroupDepth ?? '-'}`
         ]
       case 'item':
         return [

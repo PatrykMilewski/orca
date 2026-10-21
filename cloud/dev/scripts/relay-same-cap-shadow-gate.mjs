@@ -235,7 +235,7 @@ const DIRECTOR_DRAIN_FIELDS = [
 export const DIRECTOR_METRICS_LIMIT = 1000
 
 export async function readDirectorDrainReturn(reader, { config, window }) {
-  const projection = `json(timestamp,${DIRECTOR_DRAIN_FIELDS
+  const projection = `json(timestamp,labels.instanceId,${DIRECTOR_DRAIN_FIELDS
     .map((field) => `jsonPayload.${field}`)
     .join(',')})`
   const reads = []
@@ -250,7 +250,11 @@ export async function readDirectorDrainReturn(reader, { config, window }) {
     })
     reads.push({
       failed: read.failed,
-      samples: read.entries.map((entry) => ({ timestamp: entry.timestamp, ...entry.jsonPayload })),
+      samples: read.entries.map((entry) => ({
+        timestamp: entry.timestamp,
+        instanceId: entry.labels?.instanceId,
+        ...entry.jsonPayload
+      })),
       minSamples: Math.floor(
         (subWindow.endedAt.getTime() - subWindow.startedAt.getTime()) / DIRECTOR_METRICS_INTERVAL_MS
       )

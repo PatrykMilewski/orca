@@ -1,3 +1,5 @@
+// @vitest-environment happy-dom
+
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type * as RuntimeFileMutationClient from '@/runtime/runtime-file-mutation-client'
 import type * as EditorAutosave from '@/components/editor/editor-autosave'
@@ -7,6 +9,17 @@ vi.mock('@/runtime/runtime-file-mutation-client', async (importOriginal) => {
   const actual = await importOriginal<typeof RuntimeFileMutationClient>()
   return { ...actual, renameRuntimePath: mocks.renameRuntimePath }
 })
+// Switch on: main renames the tabs, and its frame rekeys the session (T1 transport, apply mode).
+vi.mock('@/runtime/runtime-rpc-client', async (importOriginal) =>
+  (
+    await import('@/runtime/layout-apply-test-transport.test-fixture')
+  ).runtimeRpcClientWithLayoutApply(await importOriginal())
+)
+vi.mock('@/runtime/runtime-layout-client', async (importOriginal) =>
+  (
+    await import('@/runtime/layout-apply-test-transport.test-fixture')
+  ).runtimeLayoutClientWithTestFrames(await importOriginal())
+)
 vi.mock('@/components/editor/editor-autosave', async (importOriginal) => {
   const actual = await importOriginal<typeof EditorAutosave>()
   return { ...actual, requestEditorSaveQuiesce: vi.fn().mockResolvedValue(undefined) }
@@ -17,6 +30,12 @@ import { executeOpenEditorPathMove } from './execute-open-editor-path-move'
 import { __activeEditorPathMoveCountForTests } from '@/components/editor/editor-path-move-inflight'
 import { getDiskBaselineSignature } from '../../../shared/disk-baseline-signature'
 import { buildEditorExternalWatchEventHandler as createExternalWatchEventHandler } from '@/hooks/editor-external-watch-event-reconciliation'
+import {
+  drawTabsFromMain,
+  type TabsDrawnFromMain
+} from '@/store/slices/tabs-drawn-from-main.test-fixture'
+
+let main: TabsDrawnFromMain
 
 const CONTEXT = {
   target: { kind: 'local' as const },
@@ -46,12 +65,14 @@ function openDirtyTab(): string {
 }
 
 describe('executeOpenEditorPathMove', () => {
-  beforeEach(() => {
+  beforeEach(async () => {
     useAppStore.setState(useAppStore.getInitialState(), true)
     mocks.renameRuntimePath.mockReset().mockResolvedValue(undefined)
+    main = await drawTabsFromMain(useAppStore)
   })
 
   afterEach(() => {
+    main.close()
     vi.unstubAllGlobals()
   })
 

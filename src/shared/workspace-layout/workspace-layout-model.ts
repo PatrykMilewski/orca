@@ -8,12 +8,12 @@ import type { AgentType } from '../agent-status-types'
 import type { AiVaultSessionTitle } from '../ai-vault-session-title'
 import type { PersistedClientHostedBrowserPage } from '../client-hosted-browser-page-record'
 import type { ClosedTerminalTabTombstone } from '../closed-terminal-tab-tombstones'
-import type { EditorTabView } from '../editor-tab-view-types'
 import type { ExecutionHostId } from '../execution-host'
 import type { TabContentType, TabGroupLayoutNode } from '../tab-types'
 import type { TerminalGrid, TerminalPaneLayoutNode, TerminalTab } from '../terminal-tab-types'
 import type { PersistedOpenFile } from '../workspace-session-state-types'
 import type { BrowserWorkspace } from '../browser-workspace-types'
+import type { LayoutEditorView } from './layout-editor-view'
 
 export type LayoutTerminalPanes = {
   root: TerminalPaneLayoutNode | null
@@ -102,7 +102,7 @@ export type WorkspaceLayout = {
   groupLayout?: TabGroupLayoutNode
   editorFiles?: LayoutEditorFile[]
   /** Tab id → what an editor tab shows beyond its file (diff, conflict, preview…). The view is not saved. */
-  editorViews?: Record<string, EditorTabView>
+  editorViews?: Record<string, LayoutEditorView>
   browserTabs?: LayoutBrowserTab[]
   /** Leaf id → the data of a pane of one of this workspace's terminal tabs. */
   leaves?: Record<string, LayoutLeaf>

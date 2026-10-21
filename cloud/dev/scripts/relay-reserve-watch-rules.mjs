@@ -15,7 +15,17 @@ export const RESERVE_WATCH_RULES = {
     consecutiveMinutes: 3,
     readMinutes: 10,
     // Cloud Run publishes a minute's request count up to 3 minutes late.
-    publishDelayMs: 3 * MINUTE_MS
+    publishDelayMs: 3 * MINUTE_MS,
+    // The roll ladder's one-minute would-block line, max(10x, 200), here held for 3 minutes. Every
+    // broad fault since 09-09 ran in the thousands a minute; one stalled instance peaked at 178
+    // (10-20/21) and never held 200 for 3 minutes.
+    broad: {
+      multiple: SHADOW_GATE_THRESHOLDS.nonDrain503Budget.spikeMultiple,
+      floorPerMinute: SHADOW_GATE_THRESHOLDS.nonDrain503Budget.spikeFloor
+    },
+    // Between the two lines, two instances each over their even share of the fleet line for the
+    // same 3 minutes. 10-21 07:55Z: no instance held a fifth, the stalled one fell to 5 in minute 3.
+    instances: { minOver: 2 }
   },
   // The cell closes a demoted seat after 60 s (DEMOTION_CLOSE_MS); 30 s more covers a director's
   // map still holding the closed seat.
@@ -192,8 +202,11 @@ function judgeOverrun(cell) {
 
 // Fleet-wide non-drain director 503s: no existing signal attributes a 503 to the cell a host was
 // bound for, so a problem local to one cell can stay under the fleet's line. This proxy can miss.
+// Over the fleet line, it trips only when at least two instances are each over their share of it:
+// one director instance whose database calls stall alone can carry the fleet over (10-21 07:55Z,
+// 45/164/40 with 54/155/5 on one instance). Over the broad line no instance split is needed.
 function judgeDirector503(read, state, at) {
-  const { multiple, marginPerMinute, consecutiveMinutes, publishDelayMs } = RESERVE_WATCH_RULES.director503
+  const { multiple, marginPerMinute, consecutiveMinutes, publishDelayMs, broad, instances } = RESERVE_WATCH_RULES.director503
   const { background } = state
   if (!background) {
     const publishesAt = state.flippedAt === null ? null : Math.floor(state.flippedAt / MINUTE_MS) * MINUTE_MS + publishDelayMs
@@ -213,11 +226,26 @@ function judgeDirector503(read, state, at) {
   const unmetered = recent.filter((minute) => read.unmetered.includes(minute))
   if (unmetered.length > 0) return unverifiable(`no director runtime metrics for ${unmetered.join(', ')}`)
   const counts = recent.map((minute) => read.perMinute[minute] ?? 0)
-  const detail = { backgroundPerMinute: perMinute, above, recent: Object.fromEntries(recent.map((m, i) => [m, counts[i]])) }
-  if (counts.every((count) => count > above)) {
-    return trip(`director 503s above ${above}/min for ${consecutiveMinutes} min (${counts.join(', ')})`, detail)
+  const broadLine = Math.max(perMinute * broad.multiple, broad.floorPerMinute)
+  const detail = { backgroundPerMinute: perMinute, above, broadAbove: broadLine, recent: Object.fromEntries(recent.map((m, i) => [m, counts[i]])) }
+  const sustained = `for ${consecutiveMinutes} min (${counts.join(', ')})`
+  if (counts.every((count) => count > broadLine)) {
+    return trip(`director 503s above ${broadLine}/min ${sustained}`, detail)
   }
-  return pass(detail)
+  if (!counts.every((count) => count > above)) return pass(detail)
+  if (!read.instances?.ok) return unverifiable(read.instances?.error ?? 'no per-instance director 503s')
+  // The fewest directors logging in a judged minute, so a rollout's overlap cannot shrink the share.
+  const directors = Math.min(...recent.map((minute) => read.instances.directors?.[minute]))
+  if (!Number.isInteger(directors)) return unverifiable(`no director instance count for ${recent.join(', ')}`)
+  const instanceAbove = above / Math.max(directors, instances.minOver)
+  const over = Object.entries(read.instances.perMinute)
+    .filter(([, byMinute]) => recent.every((minute) => (byMinute[minute] ?? 0) > instanceAbove))
+    .map(([instance]) => instance)
+  const split = { ...detail, instanceAbove, instancesOver: over.length }
+  if (over.length >= instances.minOver) {
+    return trip(`director 503s above ${above}/min ${sustained}, ${over.length} instances each above ${instanceAbove}/min`, split)
+  }
+  return pass(split)
 }
 
 // A seat the ledger reconcile found behind its row and found again after the demotion should

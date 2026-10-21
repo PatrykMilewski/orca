@@ -39,6 +39,8 @@ export type OpenFileOptions = {
   focusEditor?: boolean
   reopenId?: string
   selection?: EditorTabSelection
+  /** Where in its group a reopened tab goes back to, when the open makes a new tab. */
+  groupIndex?: number
 }
 
 export type EditorFilesSlice = {
@@ -56,11 +58,15 @@ export type EditorFilesSlice = {
   activeTabType: WorkspaceVisibleTabType
   setActiveTabType: (type: WorkspaceVisibleTabType, worktreeId: string | null) => void
   openFile: (file: Omit<OpenFile, 'id' | 'isDirty'>, options?: OpenFileOptions) => string
-  /** openFile for a captured link activation; returns the actual view, or null when refused. */
+  /**
+   * openFile for a captured link activation; returns the view, or null when refused. `onShown`
+   * gets the view once drawn: a layout-owner build draws a new tab only with main's frame.
+   */
   openFileForLink: (
     file: Omit<OpenFile, 'id' | 'isDirty'>,
     options: Omit<OpenFileOptions, 'targetGroupId' | 'focusEditor' | 'selection'> | undefined,
-    intent: EditorOpenLinkIntent | null
+    intent: EditorOpenLinkIntent | null,
+    onShown?: (result: EditorOpenResult | null) => void
   ) => EditorOpenResult | null
   openNewMarkdownInActiveWorkspace: (groupId: string) => Promise<void>
   // Why: sequences openFile/setMarkdownViewMode/reveal around an async Monaco remount. See docs/markdown-internal-link-opening-design.md.

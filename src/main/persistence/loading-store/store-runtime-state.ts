@@ -7,6 +7,7 @@ import type {
 } from './workspace-session-write-listeners'
 import type { ExecutionHostId } from '../../../shared/execution-host'
 import type { StateWriteListener } from './write-scheduling'
+import type { PartitionEditorViews } from './layout-editor-views'
 import type { ActiveViewPreference } from '../../active-view-preference'
 import {
   getProfileTerminalScrollbackSnapshotRoot,
@@ -114,6 +115,8 @@ export class StoreRuntimeState {
   readonly workspaceSessionOperationListeners = new Set<WorkspaceSessionOperationListener>()
   /** `${hostId}\0${leafId}` → its pane's binding generation, in memory only (layout-owner builds). */
   readonly ptyBindingGenerations = new Map<string, number>()
+  /** Each partition's editor tab views, in memory only (layout-owner builds); see layout-editor-views. */
+  readonly layoutEditorViews = new Map<ExecutionHostId, PartitionEditorViews>()
   /** Observers of every write; see WriteSchedulingOperations.onStateWritten. */
   readonly stateWriteListeners = new Set<StateWriteListener>()
   projectHostOperations: ProjectHostPersistenceOperations | null = null

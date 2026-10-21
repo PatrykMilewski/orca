@@ -20,6 +20,7 @@ import {
   isSameWorktreeRow,
   removeWorktreeRow
 } from '../worktree/worktree-host-row-identity'
+import { noteLastVisitedWorktree } from '../worktree/last-visited-worktree-by-host'
 import { isWorktreePinned, type Worktree } from '../worktree/workspace-list-sections'
 import {
   worktreeActivate,
@@ -257,9 +258,12 @@ export function useHostWorktreeActions(args: {
       if (routeHost === null) {
         return
       }
-      // Switch point: a feed-built list highlights only what the desktop has open.
+      // Switch point: a feed-built list highlights this phone's last visit, noted here because the
+      // session may open as another page whose stored write this list never sees.
       if (!ORCA_SIDEBAR_INPUTS_IS_MAIN) {
         setOptimisticActiveWorktreeIdentity(getWorktreeRowIdentity(item))
+      } else if (hostId) {
+        noteLastVisitedWorktree({ hostId, worktreeId: item.worktreeId, executionHost: routeHost })
       }
       const rowClient = clientForRow(item)
       if (rowClient && connState === 'connected') {

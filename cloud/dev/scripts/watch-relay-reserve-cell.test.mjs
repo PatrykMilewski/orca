@@ -51,9 +51,19 @@ const minutesBefore = (at, count) =>
   Array.from({ length: count }, (_, index) =>
     new Date(Math.floor(at / MINUTE) * MINUTE - (count + 3 - index) * MINUTE).toISOString().slice(0, 16)
   )
+// Each minute's 503s spread evenly over five director instances, as a fault every instance shares.
+const DIRECTORS = ['d1', 'd2', 'd3', 'd4', 'd5']
+const spread = (perMinute) => ({
+  ok: true,
+  perMinute: Object.fromEntries(
+    DIRECTORS.map((instance) => [instance, Object.fromEntries(Object.entries(perMinute).map(([minute, count]) => [minute, count / DIRECTORS.length]))])
+  ),
+  directors: Object.fromEntries(Object.keys(perMinute).map((minute) => [minute, DIRECTORS.length]))
+})
 const quiet503 = (at, perMinute = 10) => {
   const minutes = minutesBefore(at, 3)
-  return { ok: true, minutes, perMinute: Object.fromEntries(minutes.map((minute) => [minute, perMinute])), publishedThrough: minutes.at(-1), unmetered: [] }
+  const counts = Object.fromEntries(minutes.map((minute) => [minute, perMinute]))
+  return { ok: true, minutes, perMinute: counts, publishedThrough: minutes.at(-1), unmetered: [], instances: spread(counts) }
 }
 const sampleAt = (at, overrides = {}) => ({
   at,
@@ -95,13 +105,8 @@ test('503s trip only after three complete minutes over max(1.5x background, back
   const state = freshState({ background: { medianPerMinute: 100, source: 'input' } })
   const series = (counts) => {
     const minutes = minutesBefore(START, 3)
-    return {
-      ok: true,
-      minutes,
-      perMinute: Object.fromEntries(minutes.map((minute, index) => [minute, counts[index]])),
-      publishedThrough: minutes.at(-1),
-      unmetered: []
-    }
+    const perMinute = Object.fromEntries(minutes.map((minute, index) => [minute, counts[index]]))
+    return { ok: true, minutes, perMinute, publishedThrough: minutes.at(-1), unmetered: [], instances: spread(perMinute) }
   }
   const twoOver = evaluateWatchSample(state, sampleAt(START, { director503: series([151, 140, 200]) }), LIMIT)
   assert.equal(twoOver.state.state, 'watching')
@@ -136,7 +141,7 @@ test('503 minutes past the publishing front are left out, and only no front at a
   const judge = (director503) => evaluateWatchSample(state, sampleAt(START, { director503 }), LIMIT)
   // The front is two minutes behind: the three minutes before it are judged, the two after are not.
   const over = Object.fromEntries(minutes.map((minute) => [minute, 500]))
-  const behind = judge({ ok: true, minutes, perMinute: over, publishedThrough: minutes[7], unmetered: [] })
+  const behind = judge({ ok: true, minutes, perMinute: over, publishedThrough: minutes[7], unmetered: [], instances: spread(over) })
   assert.equal(behind.rules.director503.status, 'trip')
   assert.deepEqual(Object.keys(behind.rules.director503.recent), minutes.slice(5, 8))
   // A sparse 503 series: minutes after its last point but within the front are zero, not late.
@@ -152,6 +157,95 @@ test('503 minutes past the publishing front are left out, and only no front at a
   const stale = judge({ ok: true, minutes, perMinute: {}, publishedThrough: minutes[1], unmetered: [] })
   assert.equal(stale.rules.director503.status, 'unverifiable')
   assert.match(stale.rules.director503.reason, new RegExp(`published only through ${minutes[1]}`))
+})
+
+// 10-21 07:55Z: one director instance's database calls stalled, carrying the fleet over its line
+// alone and flipping four reserve cells back. Background 10: fleet line 30, instance line 6, broad 200.
+test('one stalled director instance does not trip the 503 rule; two instances or a broad fault do', () => {
+  const state = freshState({ background: { medianPerMinute: 10, source: 'input' } })
+  const minutes = minutesBefore(START, 3)
+  const byMinute = (counts) => Object.fromEntries(minutes.map((minute, index) => [minute, counts[index]]))
+  const read = (fleet, instances) => ({
+    ok: true,
+    minutes,
+    perMinute: byMinute(fleet),
+    publishedThrough: minutes.at(-1),
+    unmetered: [],
+    instances: instances.ok === false
+      ? instances
+      : { ok: true, perMinute: Object.fromEntries(Object.entries(instances).map(([id, counts]) => [id, byMinute(counts)])), directors: byMinute([5, 5, 5]) }
+  })
+  const judge = (director503) => evaluateWatchSample(state, sampleAt(START, { director503 }), LIMIT)
+  // The stall as logged, with the next minute's re-dials spread over the other four.
+  const stalled = judge(read([45, 164, 40], { sick: [54, 155, 5], d2: [1, 4, 12], d3: [0, 1, 9], d4: [1, 0, 13], d5: [0, 4, 3] }))
+  assert.equal(stalled.state.state, 'watching')
+  assert.equal(stalled.rules.director503.status, 'pass')
+  assert.equal(stalled.rules.director503.instancesOver, 0)
+  // Held over its line for all three minutes, it is still one instance.
+  const held = judge(read([60, 170, 60], { sick: [57, 165, 57], d2: [3, 5, 3] }))
+  assert.equal(held.state.state, 'watching')
+  assert.equal(held.rules.director503.instancesOver, 1)
+  // Two instances each over 6 for the same three minutes.
+  const two = judge(read([37, 37, 37], { d1: [16, 16, 16], d2: [16, 16, 16], d3: [5, 5, 5] }))
+  assert.equal(two.state.state, 'tripped')
+  assert.match(two.state.verdict, /director503: director 503s above 30\/min for 3 min \(37, 37, 37\), 2 instances each above 6\/min/)
+  // The instance split is needed only between the lines: over 200 trips with no split at all.
+  const broad = judge(read([250, 300, 260], { ok: false, error: 'director 503 request log read truncated' }))
+  assert.equal(broad.state.state, 'tripped')
+  assert.match(broad.state.verdict, /director 503s above 200\/min for 3 min \(250, 300, 260\)$/)
+  // Between them, no split is no evidence either way.
+  const blind = judge(read([150, 150, 150], { ok: false, error: 'director 503 request log read truncated' }))
+  assert.equal(blind.rules.director503.status, 'unverifiable')
+  assert.match(blind.rules.director503.reason, /truncated/)
+  assert.equal(blind.state.unverifiableStreak, 1)
+  // Platform 503s no instance answered count as an instance of their own.
+  const platform = judge(read([37, 37, 37], { 'no-instance': [16, 16, 16], d2: [16, 16, 16] }))
+  assert.equal(platform.state.state, 'tripped')
+  // The share follows the directors that logged: eight make it 30/8, so an even 45 trips.
+  const eight = read([45, 45, 45], Object.fromEntries(Array.from({ length: 8 }, (_, index) => [`d${index}`, [5.6, 5.6, 5.6]])))
+  eight.instances.directors = byMinute([8, 8, 8])
+  assert.equal(judge(eight).state.state, 'tripped')
+  // A rollout's overlap in one judged minute does not shrink the share: the fewest logging count.
+  const overlap = read([37, 37, 37], { d1: [5, 5, 5], d2: [5, 5, 5] })
+  overlap.instances.directors = byMinute([10, 5, 10])
+  assert.equal(judge(overlap).state.state, 'watching')
+  assert.equal(judge(overlap).rules.director503.instanceAbove, 6)
+  // No director count for a judged minute is no share, not a pass.
+  const uncounted = read([37, 37, 37], { d1: [16, 16, 16], d2: [16, 16, 16] })
+  delete uncounted.instances.directors[minutes[1]]
+  assert.equal(judge(uncounted).rules.director503.status, 'unverifiable')
+  assert.match(judge(uncounted).rules.director503.reason, /no director instance count/)
+  // One director: the share floors at half the line, so it alone never trips between the lines.
+  const single = read([60, 60, 60], { d1: [60, 60, 60] })
+  single.instances.directors = byMinute([1, 1, 1])
+  assert.equal(judge(single).state.state, 'watching')
+  assert.equal(judge(single).rules.director503.instanceAbove, 15)
+  // Under the fleet line the split is never read.
+  const calm = judge(read([20, 20, 20], { ok: false, error: 'director 503 request log read failed' }))
+  assert.equal(calm.rules.director503.status, 'pass')
+})
+
+test('per-instance 503s come from the request log, less each instance\'s own re-dials', async () => {
+  // 20 a minute split 10/10 over a and b; a alone answered 10 of its own re-dials a minute.
+  const sources = fakeSources({ per503: () => 20, metrics: () => [rateLimited(5), {}] })
+  const read = await readDirector503Minutes(
+    { ...fakeReader(), fetch: sources.fetchImpl, runGcloud: sources.runGcloud },
+    { projectId: 'onorca-cloud', directorService: 'orca-cloud-relay', endedAt: START, minutes: 3 }
+  )
+  assert.equal(read.ok, true)
+  assert.deepEqual(Object.values(read.perMinute), [10, 10, 10])
+  assert.deepEqual(Object.keys(read.instances.perMinute).sort(), ['a', 'b'])
+  assert.deepEqual(Object.values(read.instances.perMinute.a), [0, 0, 0])
+  assert.deepEqual(Object.values(read.instances.perMinute.b), [10, 10, 10])
+  assert.deepEqual(Object.values(read.instances.directors), [2, 2, 2])
+  // A full read is truncated, not every 503.
+  const flood = fakeSources({ per503: () => 2_000 })
+  const truncated = await readDirector503Minutes(
+    { ...fakeReader(), fetch: flood.fetchImpl, runGcloud: flood.runGcloud },
+    { projectId: 'onorca-cloud', directorService: 'orca-cloud-relay', endedAt: START, minutes: 3 }
+  )
+  assert.equal(truncated.ok, true)
+  assert.deepEqual(truncated.instances, { ok: false, error: 'director 503 request log read truncated' })
 })
 
 const SEAT_EVENT = 'orca_relay_reserve_ledger_seat_behind_row'
@@ -409,7 +503,23 @@ function metricsLines(filter, metrics) {
   const [, from, to] = filter.match(/timestamp>="([^"]+)" AND timestamp<"([^"]+)"/)
   const lines = []
   for (let at = Math.ceil(Date.parse(from) / 30_000) * 30_000; at < Date.parse(to); at += 30_000) {
-    for (const deltas of metrics(at)) lines.push({ timestamp: new Date(at).toISOString(), jsonPayload: deltas })
+    metrics(at).forEach((deltas, index) => {
+      lines.push({ timestamp: new Date(at).toISOString(), labels: { instanceId: FAKE_DIRECTORS[index] }, jsonPayload: deltas })
+    })
+  }
+  return lines.reverse()
+}
+
+// The `metrics` lines' instances in order; each minute's 503s are split between the first two.
+const FAKE_DIRECTORS = ['a', 'b', 'c', 'd', 'e']
+function requestLines(filter, per503) {
+  const [, from, to] = filter.match(/timestamp>="([^"]+)" AND timestamp<"([^"]+)"/)
+  const lines = []
+  for (let minute = Date.parse(from); minute < Date.parse(to); minute += MINUTE) {
+    const count = per503(minute)
+    for (let index = 0; index < count; index += 1) {
+      lines.push({ timestamp: new Date(minute + 1_000).toISOString(), labels: { instanceId: FAKE_DIRECTORS[index % 2] } })
+    }
   }
   return lines.reverse()
 }
@@ -473,6 +583,7 @@ function fakeSources({
     if (filter.includes(SEAT_EVENT)) return { stdout: JSON.stringify(seatControl ? summaries : []) }
     if (filter.includes(SUMMARY_EVENT)) return { stdout: JSON.stringify(ledger(samples)) }
     if (filter.includes(METRICS_EVENT)) return { stdout: JSON.stringify(metricsLines(filter, metrics)) }
+    if (filter.includes('httpRequest.status=503')) return { stdout: JSON.stringify(requestLines(filter, per503)) }
     return { stdout: '[]' }
   }
   return { fetchImpl, runGcloud, monitoringSpans, readRolloutLease: async () => rolloutLease }

@@ -343,7 +343,7 @@
 7 src/renderer/src/store/slices/browser/browser-host-state.ts
 1 src/renderer/src/store/slices/browser/browser-page-conversion-actions.ts
 14 src/renderer/src/store/slices/browser/browser-profile-import-actions.ts
-14 src/renderer/src/store/slices/browser/browser-profile-list-actions.ts
+13 src/renderer/src/store/slices/browser/browser-profile-list-actions.ts
 6 src/renderer/src/store/slices/browser/browser-tab-actions.ts
 1 src/renderer/src/store/slices/browser/create-browser-slice.ts
 1 src/renderer/src/store/slices/browser/paired-browser-tab-creator.ts

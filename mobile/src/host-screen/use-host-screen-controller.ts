@@ -80,7 +80,7 @@ export function useHostScreenController({
 
   useHostScreenIdentity({ client, hostId, state })
   const fetchRepoMetadataOnly = useHostRepoMetadata({ client, connState, hostId, state })
-  const sidebarFeed = useSwitchedHostSidebarFeed(client)
+  const sidebarFeed = useSwitchedHostSidebarFeed(client, hostId)
   // Read through a ref so the metadata refresh keeps its identity across installs.
   const feedRef = useRef(sidebarFeed?.feed)
   useEffect(() => {
@@ -140,6 +140,7 @@ export function useHostScreenController({
   const feed = sidebarFeed?.feed ?? null
   const sectionsResult = useHostListSections({
     client,
+    hostId,
     feed,
     displayWorktrees,
     hostPlatform,
@@ -156,7 +157,7 @@ export function useHostScreenController({
     [state.view.filters, uniqueRepos]
   )
   const existingWorktreePaths = useMemo(() => state.worktrees.map((w) => w.path), [state.worktrees])
-  const activeWorktreeScroll = useActiveWorktreeScroll(sectionsResult.sections)
+  const activeWorktreeScroll = useActiveWorktreeScroll(sectionsResult.sections, collapsedGroups)
 
   return {
     actions,

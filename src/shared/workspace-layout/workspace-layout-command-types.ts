@@ -8,7 +8,6 @@ import type { LiveTerminalAdoption } from './workspace-layout-terminal-adoption'
 import type { SleepingAgentSessionRecord } from '../agent-session-resume'
 import type { AgentType } from '../agent-status-types'
 import type { AiVaultSessionTitle } from '../ai-vault-session-title'
-import type { EditorTabView } from '../editor-tab-view-types'
 import type { TabContentType, TabGroupLayoutNode } from '../tab-types'
 import type {
   TerminalGrid,
@@ -18,6 +17,7 @@ import type {
 import type { PaneSide } from './terminal-pane-tree'
 import type { SplitRatioIntent } from './split-ratio-intents'
 import type { PaneOutcomeChanges } from './workspace-layout-pane-outcomes'
+import type { LayoutEditorView } from './layout-editor-view'
 import type { LayoutEditorFile, LayoutTerminalCreation } from './workspace-layout-model'
 
 type On = { workspace: string }
@@ -142,8 +142,10 @@ export type LayoutCommand =
       /** Present for edit-mode files, which are restored after restart. */
       file?: LayoutEditorFile
       /** What the tab shows beyond its file; not saved. */
-      view?: EditorTabView
+      view?: LayoutEditorView
       groupId?: string
+      /** Placement in the group: at this index, else at its end. */
+      index?: number
       preview?: boolean
       /** Editor tabs whose view reported an unsaved draft: a preview among them is not replaced. */
       dirtyTabIds?: string[]
@@ -168,8 +170,9 @@ export type LayoutCommand =
       type: 'moveTabToWorkspace'
       /** The workspace that owns the tabs' file, as the window resolved it; same partition. */
       toWorkspace: string
-      /** In the order they join the group's end; ids change when they name the old owner. */
-      tabs: { tabId: string; newTabId: string; newEntityId: string }[]
+      /** In the order they join the group's end; ids change when they name the old owner. A
+       *  non-plain tab's view names its file under the new owner. */
+      tabs: { tabId: string; newTabId: string; newEntityId: string; view?: LayoutEditorView }[]
       groupId: string
       /** The moved edit-mode file's record in its new workspace. */
       file?: LayoutEditorFile
@@ -178,6 +181,8 @@ export type LayoutCommand =
       type: 'renameEditorFiles'
       /** Under the window's ids; one workspace's files only. */
       renames: EditorFileRename[]
+      /** Other workspaces' renames of the same disk move: all are applied, or none. */
+      alsoIn?: { workspace: string; renames: EditorFileRename[] }[]
     })
   | (On & {
       type: 'openBrowserTab'
@@ -260,6 +265,8 @@ export type EditorFileRename = {
   fileId: string
   newFileId: string
   record?: { fromFilePath: string; file: LayoutEditorFile }
+  /** A non-plain tab's view under the file's new path. */
+  view?: LayoutEditorView
 }
 
 export type GroupSide = 'left' | 'right' | 'up' | 'down'

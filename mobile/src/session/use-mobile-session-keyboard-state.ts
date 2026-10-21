@@ -2,7 +2,8 @@ import { useEffect, useCallback } from 'react'
 import { useSoftKeyboard } from '../platform/keyboard-occlusion'
 import { useTerminalViewportRefit } from '../terminal/terminal-viewport-refit'
 import { removeCustomKey, type CustomKey } from '../terminal/terminal-custom-keys'
-import { writeLastVisitedWorktree } from '../worktree/last-visited-worktree-repo'
+import { useWorkspaceExecutionHost } from '../navigation/workspace-execution-host'
+import { writeLastVisitedWorktree } from '../worktree/last-visited-worktree-by-host'
 import { resolveTabStripScrollOffset } from './tab-strip-scroll'
 import type { MobileSessionLifecycleModel } from './use-mobile-session-lifecycle'
 
@@ -127,11 +128,12 @@ export function useMobileSessionKeyboardState(scope: MobileSessionKeyboardScope)
     return () => cancelAnimationFrame(id)
   }, [activeSessionTabId, scrollActiveTabIntoView])
 
+  const executionHost = useWorkspaceExecutionHost()
   useEffect(() => {
     if (hostId && worktreeId) {
-      writeLastVisitedWorktree({ hostId, worktreeId })
+      void writeLastVisitedWorktree({ hostId, worktreeId, executionHost })
     }
-  }, [hostId, worktreeId])
+  }, [hostId, worktreeId, executionHost])
 
   const handleDeleteCustomKey = useCallback(async (key: CustomKey) => {
     try {

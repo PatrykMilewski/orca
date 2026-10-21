@@ -4,6 +4,7 @@ import {
   SIDEBAR_INPUTS_SEMANTICS_VERSION,
   type SidebarInputsChangedEvent
 } from '../../../src/shared/sidebar-list/sidebar-inputs-feed-contract'
+import type { InstalledSidebarInputs } from '../../../src/shared/sidebar-list/sidebar-inputs-feed-installer'
 import {
   readSidebarFeedDomains,
   type SidebarFeedDomains
@@ -32,6 +33,38 @@ export type HostSidebarFeedControls = {
 
 const NOTHING_READ: HostSidebarFeedRead = { installed: null, unavailable: false }
 
+const MAX_REMEMBERED_HOSTS = 20
+/** Each paired host's last installed feed, for this document's next list of it. */
+const rememberedFeeds = new Map<string, InstalledSidebarInputs>()
+
+function rememberFeed(hostId: string, installed: InstalledSidebarInputs | null): void {
+  rememberedFeeds.delete(hostId)
+  if (!installed) {
+    return
+  }
+  rememberedFeeds.set(hostId, installed)
+  if (rememberedFeeds.size > MAX_REMEMBERED_HOSTS) {
+    const oldest = rememberedFeeds.keys().next().value
+    if (oldest !== undefined) {
+      rememberedFeeds.delete(oldest)
+    }
+  }
+}
+
+/** The host's last installed feed while a fresh read is out: the desktop's list, if not its newest. */
+function rememberedRead(hostId: string | undefined): HostSidebarFeedRead {
+  const installed = hostId ? rememberedFeeds.get(hostId) : undefined
+  // One this page cannot read would flash "Reopen" for a host whose fresh read may be fine.
+  return installed && SUPPORTED_SIDEBAR_SEMANTICS_VERSIONS.includes(installed.semanticsVersion)
+    ? { installed, unavailable: false }
+    : NOTHING_READ
+}
+
+/** Test seam: a fresh document remembers nothing. */
+export function forgetRememberedSidebarFeeds(): void {
+  rememberedFeeds.clear()
+}
+
 export function readHostSidebarFeed({
   installed,
   unavailable
@@ -48,20 +81,29 @@ export function readHostSidebarFeed({
   return { kind: 'ready', domains: readSidebarFeedDomains(installed) }
 }
 
-/** The connected host's installed sidebar feed; a new client is a new host, read from scratch. */
-export function useHostSidebarFeed(client: RpcClient | null): HostSidebarFeedControls {
+/**
+ * The connected host's installed sidebar feed; a new client is a new host, read from scratch.
+ * Until that read installs, the host's last installed feed stands in for it.
+ */
+export function useHostSidebarFeed(
+  client: RpcClient | null,
+  hostId: string | undefined
+): HostSidebarFeedControls {
   const readerRef = useRef<HostSidebarFeedReader | null>(null)
   const installListenersRef = useRef(new Set<() => void>())
-  const [read, setRead] = useState(NOTHING_READ)
+  const [read, setRead] = useState(() => rememberedRead(hostId))
 
   useEffect(() => {
-    setRead(NOTHING_READ)
+    setRead(rememberedRead(hostId))
     if (!client) {
       return
     }
     let lastInstalled: HostSidebarFeedRead['installed'] = null
     const reader = new HostSidebarFeedReader(client, (next) => {
       setRead(next)
+      if (hostId) {
+        rememberFeed(hostId, next.unavailable ? null : next.installed)
+      }
       if (next.installed && next.installed !== lastInstalled) {
         installListenersRef.current.forEach((listener) => listener())
       }
@@ -74,7 +116,7 @@ export function useHostSidebarFeed(client: RpcClient | null): HostSidebarFeedCon
         readerRef.current = null
       }
     }
-  }, [client])
+  }, [client, hostId])
 
   const triggers = useMemo(
     (): HostSidebarFeedTriggers => ({
@@ -94,5 +136,6 @@ export function useHostSidebarFeed(client: RpcClient | null): HostSidebarFeedCon
 
 /** Switch point: a page built without the feed reads none. */
 export const useSwitchedHostSidebarFeed: (
-  client: RpcClient | null
+  client: RpcClient | null,
+  hostId: string | undefined
 ) => HostSidebarFeedControls | null = ORCA_SIDEBAR_INPUTS_IS_MAIN ? useHostSidebarFeed : () => null

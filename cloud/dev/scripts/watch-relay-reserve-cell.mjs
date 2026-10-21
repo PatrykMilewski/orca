@@ -190,8 +190,60 @@ export async function readDirector503Minutes(reader, { projectId, directorServic
     perMinute: Object.fromEntries(keys.map((minute, index) => [minute, nonDrain.series[index]])),
     minutes: keys,
     publishedThrough: published.at(-1) ?? null,
-    unmetered: keys.filter((minute) => !metered.has(minute))
+    unmetered: keys.filter((minute) => !metered.has(minute)),
+    instances: await readDirector503ByInstance(reader, { projectId, directorService, span, metrics, keys })
   }
+}
+
+// Raw 503 request-log lines in one 10-minute read; 10-20/21 peaked at 1,681. Past it only a
+// brownout over the broad line, which needs no split.
+export const DIRECTOR_503_LOG_LIMIT = 5_000
+// Platform 503s answered by no instance (none in 10-20/21) count as one instance of their own.
+const NO_INSTANCE = 'no-instance'
+
+// The same non-drain measure per director instance: the metric names no instance, so the 503s
+// come from Cloud Run's request log, less each instance's own scheduled 503s. `directors` is, per
+// minute, how many instances logged a runtime-metrics line ending in it.
+async function readDirector503ByInstance(reader, { projectId, directorService, span, metrics, keys }) {
+  const read = await readLogEntries(reader, {
+    filter: [
+      'resource.type="cloud_run_revision"',
+      `resource.labels.service_name="${directorService}"`,
+      `logName="projects/${projectId}/logs/run.googleapis.com%2Frequests"`,
+      'httpRequest.status=503',
+      `timestamp>="${span.startedAt.toISOString()}"`,
+      `timestamp<"${span.endedAt.toISOString()}"`
+    ].join(' AND '),
+    projection: 'json(timestamp,labels.instanceId)',
+    limit: DIRECTOR_503_LOG_LIMIT
+  })
+  if (read.failed) return failedRead(`director 503 request log read failed: ${read.error}`)
+  if (read.entries.length >= DIRECTOR_503_LOG_LIMIT) return failedRead('director 503 request log read truncated')
+  const raw = new Map()
+  for (const entry of read.entries) {
+    const at = Date.parse(entry.timestamp)
+    if (!Number.isFinite(at)) return failedRead('director 503 request log line with an unparseable timestamp')
+    const instance = entry.labels?.instanceId || NO_INSTANCE
+    const perMinute = raw.get(instance) ?? {}
+    perMinute[minuteKey(at)] = (perMinute[minuteKey(at)] ?? 0) + 1
+    raw.set(instance, perMinute)
+  }
+  const perInstance = {}
+  for (const [instance, perMinute] of raw) {
+    // Coverage is checked fleet-wide above; an instance with no lines under-subtracts, toward a trip.
+    const own = drainReturnByMinute(
+      metrics.map((part) => ({ samples: part.samples.filter((sample) => sample.instanceId === instance) })),
+      DIRECTOR_METRICS_LIMIT
+    )
+    const { series } = withoutDrainDeferrals({ perMinute }, own, keys)
+    perInstance[instance] = Object.fromEntries(keys.map((minute, index) => [minute, series[index]]))
+  }
+  const logged = new Map(keys.map((minute) => [minute, new Set()]))
+  for (const sample of metrics.flatMap((part) => part.samples)) {
+    if (sample.instanceId) logged.get(minuteKey(Date.parse(sample.timestamp) - 1))?.add(sample.instanceId)
+  }
+  const directors = Object.fromEntries([...logged].map(([minute, instances]) => [minute, instances.size]))
+  return { ok: true, perMinute: perInstance, directors }
 }
 
 const CELL_METRICS_EVENT = 'orca_relay_runtime_metrics'

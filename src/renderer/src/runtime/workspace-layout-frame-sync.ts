@@ -25,15 +25,15 @@ import {
 import type { TerminalTabTitleUpdate } from '@/store/slices/terminal-tab-title-batch'
 import type { WorkspaceLayoutChangeFrame } from '../../../shared/workspace-layout/workspace-layout-stream-frames'
 import { liveTitleUpdates } from './workspace-layout-frame-changes'
-import { terminalLayoutsWithReboundFrames } from './workspace-layout-frame-bindings'
 import { terminalLayoutsWithFramePaneTrees } from './workspace-layout-frame-pane-trees'
 import { showFramePaneStarts } from './workspace-layout-frame-pane-starts'
 import {
-  fullLayoutFrameBuildPatch,
-  workspaceLayoutFrameBuildPatch,
+  layoutFrameFlushPatch,
   type LayoutFrameBuildHolds,
   type LayoutFrameBuildPatch
 } from './workspace-layout-frame-builds'
+import { shownContentRekeyPatch } from './layout-owner-content-rekeys'
+import { provideLayoutFrameWorkspaces } from './layout-frame-workspaces'
 import {
   notePendingRecordsFrame,
   pendingWorkspaceChanges,
@@ -133,18 +133,6 @@ export function openWorkspaceLayoutFrameSync(
     show(terminalLayoutsPatch(state, shownTrees.layouts))
   }
 
-  // Only panes' bindings changed: the pane trees take them, unless only a build shows them so.
-  const showFrameBindings = (rebound: ReadonlyMap<string, ReadonlySet<string>>): string[] => {
-    const state = store.getState()
-    const shownBindings = terminalLayoutsWithReboundFrames(
-      state.terminalLayoutsByTabId,
-      cache,
-      rebound
-    )
-    show(terminalLayoutsPatch(state, shownBindings.layouts))
-    return shownBindings.unshown
-  }
-
   const flush = (): void => {
     flushQueued = false
     selectionsTaken = []
@@ -207,15 +195,13 @@ export function openWorkspaceLayoutFrameSync(
         shown.delete(key)
       }
     }
-    if (fullBuilt.length > 0) {
-      show(fullLayoutFrameBuildPatch(state, cache, fullBuilt, holds))
-    }
-    if (rebound.size > 0) {
-      workspaceBuilt.push(...showFrameBindings(rebound))
-    }
-    if (workspaceBuilt.length > 0) {
-      show(workspaceLayoutFrameBuildPatch(store.getState(), cache, workspaceBuilt, holds))
-    }
+    // One update: a move's or rename's content rekeys with the frame that shows it.
+    const rekeyed = shownContentRekeyPatch(state, cache)
+    const base: AppState = { ...state, ...rekeyed }
+    show({
+      ...rekeyed,
+      ...layoutFrameFlushPatch(base, cache, { fullBuilt, workspaceBuilt, rebound }, holds)
+    })
     if (titleUpdates.length > 0) {
       store.getState().updateTabTitles(titleUpdates)
     }
@@ -234,7 +220,7 @@ export function openWorkspaceLayoutFrameSync(
       showPaneTrees(store.getState())
     }
     layoutFrameApplyObserver()?.({
-      before: state,
+      before: base,
       after: store.getState(),
       cache,
       changed,
@@ -305,9 +291,14 @@ export function openWorkspaceLayoutFrameSync(
     () => streamOpen && scheduleFlush()
   )
 
+  let stopWorkspaceReader = (): void => {}
   return {
     start: () => {
       started = true
+      // A closed stream's cache is frozen: main may have changed the workspace since.
+      stopWorkspaceReader = provideLayoutFrameWorkspaces((worktreeId) =>
+        streamOpen ? cache[worktreeId] : undefined
+      )
       // Before its snapshot, the snapshot starts it; a stream that ends first leaves restore's.
       live = snapshotReceived
       // A re-run restore rebuilt the slices, so every workspace is shown again.
@@ -325,6 +316,7 @@ export function openWorkspaceLayoutFrameSync(
     },
     close: () => {
       live = false
+      stopWorkspaceReader()
       stopHeldWorkspacesListener()
       stopHeldTabsListener()
       stopReleaseListener()

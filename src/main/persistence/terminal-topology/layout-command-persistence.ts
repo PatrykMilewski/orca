@@ -13,13 +13,22 @@ import type {
   StoreRuntimeState
 } from '../loading-store/store-runtime-state'
 import type { ExecutionHostId } from '../../../shared/execution-host'
-import { applyLayout, keepFrozen, topologyCommitContext } from './terminal-topology-commit'
+import {
+  applyLayout,
+  applyEditorFileRenamesInPartitions,
+  topologyCommitContext
+} from './terminal-topology-commit'
+import { keepFrozen } from './layout-command-commit'
 import { applyLayoutRenames } from './terminal-layout-renames-commit'
 import { isTerminalClose, keptOnWriteFailure } from './terminal-close-write-failure'
 import { ORCA_LAYOUT_OWNER_IS_MAIN } from '../../../shared/layout-owner-switch'
 import { moveTabAcrossPartitions } from './cross-partition-tab-move'
 import { writeRestorable } from './restorable-write'
 import { raisingBindingGenerations } from './layout-command-binding-generations'
+import {
+  keepPartitionEditorViews,
+  partitionEditorViewsOf
+} from '../loading-store/layout-editor-views'
 import { assignWorkspaceSessionPartition } from './terminal-topology-membership'
 import {
   repairDuplicatePtyPanesMutation,
@@ -41,6 +50,7 @@ type LayoutCommandRuntime = Pick<
   | 'dirtyProfileStateDomains'
   | 'writesFrozen'
   | 'ptyBindingGenerations'
+  | 'layoutEditorViews'
 >
 
 const layoutCommandPersistenceContext = Symbol('LayoutCommandPersistence')
@@ -87,6 +97,24 @@ export class LayoutCommandPersistence {
     return context.runtime.runDurableMutation(writingOnly(resolved, commit))
   }
 
+  /** One disk move's editor renames, a command per partition: all written in one durable write or,
+   *  on any refusal, none. They change no pane, so no binding or pane fence moves. */
+  applyEditorFileRenamesAcrossPartitions(
+    batches: readonly { hostId: string; command: CommandOf<'renameEditorFiles'> }[]
+  ): Promise<LayoutApplyOutcome> {
+    const context = this[layoutCommandPersistenceContext]
+    const resolved = batches.map(({ hostId, command }) => ({
+      hostId: resolveHostId(hostId),
+      command
+    }))
+    return context.runtime.runDurableMutation(
+      writingOnly(
+        resolved.map(({ hostId }) => hostId),
+        applyEditorFileRenamesInPartitions(resolved, topologyCommitContext(context))
+      )
+    )
+  }
+
   /** `renameTabs`: each partition's renames in one durable write of all; resolves those refused. */
   applyTabRenames(
     batches: readonly { hostId: string; renames: readonly CommandOf<'renameTab'>[] }[]
@@ -112,16 +140,27 @@ export class LayoutCommandPersistence {
   ): Promise<LayoutApplyOutcome> {
     const commit = topologyCommitContext(this[layoutCommandPersistenceContext])
     const [from, to] = [resolveHostId(fromHostId), resolveHostId(toHostId)]
-    return this[layoutCommandPersistenceContext].runtime.runDurableMutation(() => {
+    const { runtime } = this[layoutCommandPersistenceContext]
+    return runtime.runDurableMutation(() => {
       const moved = moveTabAcrossPartitions(
-        { hostId: from, session: commit.getSession(from) },
-        { hostId: to, session: commit.getSession(to) },
+        {
+          hostId: from,
+          session: commit.getSession(from),
+          views: partitionEditorViewsOf(runtime, from)
+        },
+        { hostId: to, session: commit.getSession(to), views: partitionEditorViewsOf(runtime, to) },
         command
       )
       if (!moved.sessions) {
         return { value: moved.value, persist: false }
       }
-      const restores = (
+      const viewRestores = moved.views
+        ? [
+            keepPartitionEditorViews(runtime, from, moved.views.from),
+            keepPartitionEditorViews(runtime, to, moved.views.to)
+          ]
+        : []
+      const sessionRestores = (
         [
           [from, moved.sessions.from],
           [to, moved.sessions.to]
@@ -133,6 +172,7 @@ export class LayoutCommandPersistence {
           keepFrozen(hostId, session, commit)
         )
       )
+      const restores = [...viewRestores, ...sessionRestores]
       return { value: moved.value, rollback: () => restores.forEach((restore) => restore()) }
     })
   }

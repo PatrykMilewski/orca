@@ -58,6 +58,9 @@ export async function applyWindowLayoutCommand(
   if (command.type === 'moveTabToWorkspace') {
     return moveTabToWorkspace(store, hostIdsFor, command)
   }
+  if (command.type === 'renameEditorFiles' && command.alsoIn) {
+    return renameEditorFilesInWorkspaces(store, hostIdsFor, command)
+  }
   const routedTabId =
     'tabId' in command
       ? (command.tabId ?? null)
@@ -207,6 +210,48 @@ async function moveTabToWorkspace(
     throw new Error('layout_store_unavailable')
   }
   return store.applyLayoutCommand(command, [from])
+}
+
+/**
+ * One disk move's renames across workspaces, each partition's in one command, all in one durable
+ * write: written everywhere or nowhere. A workspace a paired server owns refuses the whole.
+ */
+async function renameEditorFilesInWorkspaces(
+  store: RuntimeStore,
+  hostIdsFor: (worktreeId: string, tabId: string | null) => ExecutionHostId[],
+  command: CommandOf<'renameEditorFiles'>
+): Promise<LayoutApplyReply> {
+  const parts = [
+    { workspace: command.workspace, renames: command.renames },
+    ...(command.alsoIn ?? [])
+  ]
+  if (parts.some((part) => isWslMoveWorkspaceSessionFrozen(part.workspace))) {
+    return { ok: false, code: 'wsl_move_in_progress' }
+  }
+  const batches: { hostId: ExecutionHostId; command: CommandOf<'renameEditorFiles'> }[] = []
+  for (const part of parts) {
+    const [hostId] = hostIdsFor(part.workspace, null)
+    if (!hostId || parseExecutionHostId(hostId)?.kind === 'runtime') {
+      return { ok: false, code: 'host_not_owned' }
+    }
+    const batch = batches.find((entry) => entry.hostId === hostId)
+    if (batch) {
+      batch.command = { ...batch.command, alsoIn: [...(batch.command.alsoIn ?? []), part] }
+    } else {
+      batches.push({ hostId, command: { type: 'renameEditorFiles', ...part } })
+    }
+  }
+  const [only] = batches
+  if (batches.length === 1 && only) {
+    if (!store.applyLayoutCommand) {
+      throw new Error('layout_store_unavailable')
+    }
+    return store.applyLayoutCommand(only.command, [only.hostId])
+  }
+  if (!store.applyEditorFileRenamesAcrossPartitions) {
+    throw new Error('layout_store_unavailable')
+  }
+  return store.applyEditorFileRenamesAcrossPartitions(batches)
 }
 
 /** A tab-bar id's terminal id, which a legacy entry's can differ from. */

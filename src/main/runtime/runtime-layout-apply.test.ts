@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { applyWindowLayoutCommand, type WindowLayoutCommand } from './runtime-layout-apply'
 import type { RuntimeStore } from './runtime-store-contract'
+import type { ExecutionHostId } from '../../shared/execution-host'
 import type { LayoutApplyOutcome } from '../../shared/workspace-layout/workspace-layout-command-types'
 
 const mocks = vi.hoisted(() => ({
@@ -325,5 +326,48 @@ describe('applyWindowLayoutCommand', () => {
       result: {}
     })
     expect(applyLayoutCommand).toHaveBeenCalledTimes(1)
+  })
+
+  it("writes one disk move's renames across workspaces, a command per partition, or refuses", async () => {
+    const renames = [{ fileId: '/a.ts', newFileId: '/b.ts' }]
+    const rename: WindowLayoutCommand = {
+      type: 'renameEditorFiles',
+      workspace: 'wt-1',
+      renames,
+      alsoIn: [{ workspace: 'wt-2', renames }]
+    }
+    const { store, applyLayoutCommand } = storeWith()
+    const applyEditorFileRenamesAcrossPartitions = vi.fn(async (): Promise<LayoutApplyOutcome> => ({
+      ok: true,
+      result: {}
+    }))
+    Object.assign(store, { applyEditorFileRenamesAcrossPartitions })
+
+    await applyWindowLayoutCommand(store, () => ['local'], rename)
+    expect(applyLayoutCommand).toHaveBeenCalledWith(rename, ['local'])
+
+    applyLayoutCommand.mockClear()
+    const hosts =
+      (other: ExecutionHostId) =>
+      (workspace: string): ExecutionHostId[] => [workspace === 'wt-2' ? other : 'local']
+    // Each partition's renames in its own command, all in one durable write.
+    expect(await applyWindowLayoutCommand(store, hosts('ssh:target-1'), rename)).toEqual({
+      ok: true,
+      result: {}
+    })
+    expect(applyEditorFileRenamesAcrossPartitions).toHaveBeenCalledWith([
+      { hostId: 'local', command: { type: 'renameEditorFiles', workspace: 'wt-1', renames } },
+      { hostId: 'ssh:target-1', command: { type: 'renameEditorFiles', workspace: 'wt-2', renames } }
+    ])
+    expect(await applyWindowLayoutCommand(store, hosts('runtime:env-1'), rename)).toEqual({
+      ok: false,
+      code: 'host_not_owned'
+    })
+    mocks.frozen.add('wt-2')
+    expect(await applyWindowLayoutCommand(store, () => ['local'], rename)).toEqual({
+      ok: false,
+      code: 'wsl_move_in_progress'
+    })
+    expect(applyLayoutCommand).not.toHaveBeenCalled()
   })
 })
